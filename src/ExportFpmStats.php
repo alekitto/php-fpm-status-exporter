@@ -17,7 +17,6 @@ use hollodotme\FastCGI\Sockets\SocketId;
 use JsonException;
 use Psr\Log\LoggerInterface;
 use Psr\Log\LogLevel;
-use RuntimeException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -91,45 +90,9 @@ class ExportFpmStats extends Command
         }
 
         if (null === $metadata) {
-            if ('production' === getenv('APP_ENV')) {
-                throw new RuntimeException('Not executing on ECS');
-            }
-
-            $output->writeln('Missing task metadata. Generate mocks.');
-            // mock data
-
-            $cluster = 'FooCluster';
-            $taskArn = 'arn:task:placeholder';
-            $taskName = 'foo-task';
-
-            $cloudwatch = new class() extends CloudWatchClient {
-                private OutputInterface $output;
-
-                /** {@inheritDoc} */
-                public function __construct()
-                {
-                    // fake, do nothing
-                }
-
-                /** {@inheritDoc} */
-                public function putMetricData(array $args = []): void
-                {
-                    if (isset($this->output)) {
-                        $this->output->writeln(sprintf(
-                            '<comment>%s</comment>: %s',
-                            'putMetricData',
-                            json_encode($args, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT)
-                        ));
-                    }
-                    // do nothing
-                }
-
-                public function setOutput(OutputInterface $output): void
-                {
-                    $this->output = $output;
-                }
-            };
-            $cloudwatch->setOutput($output);
+            $cluster = getenv('CLUSTER_NAME') ?: 'AWS-EC2';
+            $taskName = getenv('TASK_NAME') ?: 'PHP-FPM';
+            $taskArn = null;
         } else {
             $cluster = $metadata['Cluster'];
             $taskArn = $metadata['TaskARN'];
@@ -145,9 +108,9 @@ class ExportFpmStats extends Command
             } else {
                 $taskName = substr($group, 8);
             }
-            $cloudwatch = new CloudWatchClient($options + ['version' => '2010-08-01']);
         }
 
+        $cloudwatch = new CloudWatchClient($options + ['version' => '2010-08-01']);
         $resolution = $input->getOption('hi-res') ? 5 : 60;
         $sleepTime = $resolution;
         $responseBody = null;
@@ -198,27 +161,29 @@ class ExportFpmStats extends Command
                 $time = time();
                 $metricsData = [];
                 foreach ($stats as $name => $value) {
-                    $metricsData[] = [
-                        'MetricName' => $name,
-                        'Timestamp' => $time,
-                        'Dimensions' => [
-                            [
-                                'Name' => 'ClusterName',
-                                'Value' => $clusterName,
+                    if ($taskArn !== null) {
+                        $metricsData[] = [
+                            'MetricName' => $name,
+                            'Timestamp' => $time,
+                            'Dimensions' => [
+                                [
+                                    'Name' => 'ClusterName',
+                                    'Value' => $clusterName,
 
+                                ],
+                                [
+                                    'Name' => 'ServiceName',
+                                    'Value' => $taskName,
+                                ],
+                                [
+                                    'Name' => 'Task',
+                                    'Value' => false !== strrpos($taskArn, '/') ? substr($taskArn, strrpos($taskArn, '/') + 1) : $taskArn,
+                                ],
                             ],
-                            [
-                                'Name' => 'ServiceName',
-                                'Value' => $taskName,
-                            ],
-                            [
-                                'Name' => 'Task',
-                                'Value' => false !== strrpos($taskArn, '/') ? substr($taskArn, strrpos($taskArn, '/') + 1) : $taskArn,
-                            ],
-                        ],
-                        'Value' => $value['Value'],
-                        'Unit' => $value['Unit'],
-                    ];
+                            'Value' => $value[ 'Value' ],
+                            'Unit' => $value[ 'Unit' ],
+                        ];
+                    }
 
                     $metricsData[] = [
                         'MetricName' => $name,
@@ -277,7 +242,7 @@ class ExportFpmStats extends Command
     {
         $socketPath = $input->getArgument('socket');
         if ('unix' === parse_url($socketPath, PHP_URL_SCHEME)) {
-            $socketConfiguration = new UnixDomainSocket($socketPath);
+            $socketConfiguration = new UnixDomainSocket(parse_url($socketPath, PHP_URL_PATH));
         } else {
             $host = parse_url($socketPath, PHP_URL_HOST);
             $port = (int) (parse_url($socketPath, PHP_URL_PORT) ?: 9000);
