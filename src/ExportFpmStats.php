@@ -140,6 +140,8 @@ class ExportFpmStats extends Command
             $start = (int) (microtime(true) * 1000);
 
             try {
+                $sleepTime = $resolutionOption * 1000;
+
                 $socket = self::createSocket($socketConfiguration);
                 $socket->sendRequest($request);
 
@@ -173,7 +175,8 @@ class ExportFpmStats extends Command
                             $clusterName,
                             $taskName,
                             $name,
-                            $value['Value'], ];
+                            $value['Value'],
+                        ];
                     }
 
                     $io->table(['ClusterName', 'ServiceName', 'MetricsName', 'Value'], $rows);
@@ -203,8 +206,9 @@ class ExportFpmStats extends Command
                                     'Value' => false !== strrpos($taskArn, '/') ? substr($taskArn, strrpos($taskArn, '/') + 1) : $taskArn,
                                 ],
                             ],
-                            'Value' => $value[ 'Value' ],
-                            'Unit' => $value[ 'Unit' ],
+                            'Value' => $value['Value'],
+                            'Unit' => $value['Unit'],
+                            'StorageResolution' => $resolution,
                         ];
                     }
 
@@ -224,16 +228,14 @@ class ExportFpmStats extends Command
                         ],
                         'Value' => $value['Value'],
                         'Unit' => $value['Unit'],
+                        'StorageResolution' => $resolution,
                     ];
                 }
 
                 $cloudwatch->putMetricData([
                     'Namespace' => $namespace,
-                    'StorageResolution' => $resolution,
                     'MetricData' => $metricsData,
                 ]);
-
-                $sleepTime = $resolution * 1000;
             } catch (JsonException $e) {
                 $sleepTime = 2_000;
 
