@@ -35,12 +35,7 @@ $logger = new SentryConsoleLogger(
     $output
 );
 
-$metricNamespace = getenv('METRIC_NAMESPACE');
-if (!$metricNamespace) {
-    throw new InvalidArgumentException('Missing metric namespace. Abort.');
-}
-
-$command = new ExportFpmStats($metricNamespace, $logger);
+$command = new ExportFpmStats($logger);
 $application->add($command);
 $application->setDefaultCommand($command->getName(), false);
 

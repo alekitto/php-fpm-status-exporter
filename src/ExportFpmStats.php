@@ -29,10 +29,8 @@ use Throwable;
 #[AsCommand(name: 'run')]
 class ExportFpmStats extends Command
 {
-    public function __construct(
-        private readonly string $metricNamespace,
-        private readonly LoggerInterface $logger
-    ) {
+    public function __construct(private readonly LoggerInterface $logger)
+    {
         parent::__construct();
     }
 
@@ -41,10 +39,11 @@ class ExportFpmStats extends Command
         $this
             ->addArgument('socket', InputArgument::REQUIRED, 'The address of php-fpm socket (use unix:// prefix to use a unix socket)')
             ->addArgument('path', InputArgument::REQUIRED, 'The status page address')
+            ->addOption('namespace', 's', InputOption::VALUE_REQUIRED, 'Metric namespace', 'APP')
             ->addOption('dry-run', 'd', InputOption::VALUE_NONE, 'Do not push metrics, print them out instead')
             ->addOption('region', 'r', InputOption::VALUE_REQUIRED, 'AWS Region')
             ->addOption('profile', 'p', InputOption::VALUE_REQUIRED, 'AWS Credentials Profile')
-            ->addOption('hi-res', null, InputOption::VALUE_NONE, 'Enable Hi-resolution metrics');
+            ->addOption('resolution', 'x', InputOption::VALUE_OPTIONAL, 'Define metrics resolution', '60');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -52,6 +51,12 @@ class ExportFpmStats extends Command
         gc_enable();
 
         $io = new SymfonyStyle($input, $output);
+
+        $namespace = $input->getOption('namespace');
+        if (empty($namespace)) {
+            $io->error('No namespace defined for metrics');
+            return self::INVALID;
+        }
 
         $maxChildren = ComputeMaxChildren::computeMaxChildren();
         $socketConfiguration = $this->getSocketConfiguration($input);
@@ -111,11 +116,29 @@ class ExportFpmStats extends Command
         }
 
         $cloudwatch = new CloudWatchClient($options + ['version' => '2010-08-01']);
-        $resolution = $input->getOption('hi-res') ? 1 : 60;
-        $sleepTime = $input->getOption('hi-res') ? 5 : 60;
+        $resolutionOption = $input->getOption('resolution');
+        if (! is_numeric($resolutionOption)) {
+            $io->warning('Non-numeric resolution, defaulting to 60 secs');
+            $resolutionOption = '60';
+        }
+
+        $resolutionOption = (int) $resolutionOption;
+        if ($resolutionOption < 1) {
+            $io->warning('Invalid resolution, setting to 1 sec');
+            $resolutionOption = 1;
+        }
+
+        if ($resolutionOption > 60 && ($rem = $resolutionOption % 60) !== 0) {
+            $resolutionOption -= $rem;
+            $io->warning('Invalid resolution: should be under 60 seconds or multiple of 60 seconds. Setting to ' . $resolutionOption);
+        }
+
+        $resolution = $resolutionOption < 60 ? 1 : 60;
         $responseBody = null;
 
         while (!$stop) {
+            $start = (int) (microtime(true) * 1000);
+
             try {
                 $socket = self::createSocket($socketConfiguration);
                 $socket->sendRequest($request);
@@ -205,14 +228,14 @@ class ExportFpmStats extends Command
                 }
 
                 $cloudwatch->putMetricData([
-                    'Namespace' => $this->metricNamespace,
+                    'Namespace' => $namespace,
                     'StorageResolution' => $resolution,
                     'MetricData' => $metricsData,
                 ]);
 
-                $sleepTime = $resolution;
+                $sleepTime = $resolution * 1000;
             } catch (JsonException $e) {
-                $sleepTime = 2;
+                $sleepTime = 2_000;
 
                 $this->logger->log(LogLevel::WARNING, sprintf(
                     'Error decoding php fpm status: %s.',
@@ -221,17 +244,28 @@ class ExportFpmStats extends Command
                     'response_body' => (string) $responseBody,
                 ]);
             } catch (Throwable $e) {
+                $sleepTime = 2_000;
+
                 $this->logger->log(LogLevel::WARNING, sprintf(
                     'Error while retrieving php fpm status: %s',
                     $e->getMessage()
                 ));
             } finally {
-                sleep($sleepTime);
                 pcntl_signal_dispatch();
 
                 unset($socket);
                 gc_collect_cycles();
                 gc_mem_caches();
+
+                $elapsedTime = (((int) (microtime(true) * 1000)) - $start);
+                $time = $sleepTime - $elapsedTime;
+                if ($time < 0) {
+                    $time = 1;
+                }
+
+                $seconds = (int) ($time / 1000);
+                $ms = $time % 1000;
+                time_nanosleep($seconds, $ms * 1_000_000);
             }
         }
 
