@@ -111,8 +111,8 @@ class ExportFpmStats extends Command
         }
 
         $cloudwatch = new CloudWatchClient($options + ['version' => '2010-08-01']);
-        $resolution = $input->getOption('hi-res') ? 5 : 60;
-        $sleepTime = $resolution;
+        $resolution = $input->getOption('hi-res') ? 1 : 60;
+        $sleepTime = $input->getOption('hi-res') ? 5 : 60;
         $responseBody = null;
 
         while (!$stop) {
